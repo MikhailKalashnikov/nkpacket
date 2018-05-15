@@ -165,7 +165,7 @@ init([NkPort]) ->
             {error, Error} -> throw(Error) 
         end,
         {ok, {LocalIp, LocalPort}} = inet:sockname(Socket),
-        Self = self(),
+
         NkPort1 = NkPort#nkport{
             local_ip = LocalIp,
             local_port = LocalPort, 
