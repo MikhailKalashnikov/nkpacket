@@ -102,8 +102,11 @@ resolve([#uri{}=Uri|Rest], Opts, Acc) ->
         _ -> Target
     end,
     RawTransp =  case nklib_util:get_value(<<"transport">>, UriOpts) of
-        undefined -> 
-            nklib_util:get_value(<<"transport">>, ExtOpts);
+        undefined ->
+            case nklib_util:get_value(<<"transport">>, ExtOpts) of
+                undefined -> maps:get(transport, Opts, undefined);
+                RawTransp1 -> RawTransp1
+            end;
         RawTransp0 ->
             RawTransp0
     end,
