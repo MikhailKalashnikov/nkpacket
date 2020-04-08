@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -24,7 +24,7 @@
 -behaviour(gen_server).
 
 -export([resolve/1, resolve/2]).
--export([ips/1, ips/2, srvs/1, srvs/2, naptr/3]).
+-export([ips/1, ips/2, srvs/1, srvs/2, naptr/3, transp/1]).
 -export([clear/1, clear/0]).
 -export([start_link/0, init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2,
          handle_info/2]).
@@ -33,6 +33,7 @@
 
 -include_lib("nklib/include/nklib.hrl").
 -include("nkpacket.hrl").
+
 
 -type opts() :: 
     #{
@@ -59,14 +60,24 @@ resolve(Uri) ->
 
 
 %% @doc Finds transports, ips and ports to try for `Uri', following RFC3263
+%%
+%%
 %% If the option 'protocol' is used, it must be a NkPACKET protocol, and will
 %% be used for:
+%%
 %% - get default transports
+%%      - function Protocol:transports(Scheme) must return a list of valid transports
+%%      - supplied "transport" options must fit
+%%      - if no transport is found, the first of the list is selected
+%       - if function is not exported, but the scheme is a valid transport, it is used as so
 %% - get default ports
+%%      - function Protocol:default_port(Transp) is called if no port is used in url
 %% - perform NAPTR queries
 %%
--spec resolve(nklib:user_uri(), opts()) -> 
-    {ok, [{uri_transp(), inet:ip_address(), inet:port_number()}]}.
+%% If resolve_type = listen, no NAPTR o SRV address resolution is attempted
+
+-spec resolve(nklib:user_uri(), opts()) ->
+    {ok, [{uri_transp(), inet:ip_address(), inet:port_number()}]} | {error, term()}.
 
 resolve([], _Opts) ->
     {ok, []};
@@ -94,6 +105,7 @@ resolve([#uri{}=Uri|Rest], Opts, Acc) ->
     Host1 = case Host of
         <<"all">> -> "0.0.0.0";
         <<"all6">> -> "0:0:0:0:0:0:0:0";
+        <<"node">> -> get_node();
         _ -> Host
     end,
     Target = nklib_util:get_list(<<"maddr">>, UriOpts, Host1),
@@ -175,6 +187,11 @@ resolve(Scheme, Host, Port, Transp, Opts) ->
     Port1 = get_port(Port, Transp1, Opts),
     [{Transp1, Addr, Port1} || Addr <- Addrs].
 
+
+%% @private
+get_node() ->
+    [_, Node] = binary:split(atom_to_binary(node(), utf8), <<"@">>),
+    Node.
 
 
 %% @doc Finds published services using DNS NAPTR search.
@@ -344,7 +361,7 @@ init([]) ->
 
 %% @private
 -spec handle_call(term(), {pid(), term()}, #state{}) ->
-    {reply, term(), #state{}} | {noreply, term(), #state{}} | 
+    {reply, term(), #state{}} | {noreply, #state{}} |
     {stop, term(), #state{}} | {stop, term(), term(), #state{}}.
 
 handle_call(Msg, _From, State) -> 
@@ -413,30 +430,43 @@ transp(Other) when is_atom(Other) -> atom_to_binary(Other, latin1);
 transp(Other) ->
     Transp = string:to_lower(nklib_util:to_list(Other)),
     case catch list_to_existing_atom(Transp) of
-        {'EXIT', _} -> nklib_util:to_binary(Other);
-        Atom -> transp(Atom)
+        {'EXIT', _} ->
+            nklib_util:to_binary(Other);
+        Atom ->
+            transp(Atom)
     end.
 
+%% @private
+%% If we set no transport, and the scheme is valid transport, use it
+get_transp(Scheme, undefined, Opts)
+        when Scheme==udp; Scheme==tcp; Scheme==tls; Scheme==sctp; Scheme==http; Scheme==https;
+             Scheme==ws; Scheme==wss ->
+    get_transp(Scheme, Scheme, Opts);
 
 %% @private
 get_transp(Scheme, Transp, #{protocol:=Protocol}) when Protocol/=undefined ->
     case erlang:function_exported(Protocol, transports, 1) of
         true ->
-            Valid = Protocol:transports(Scheme),
-            case Transp of
-                undefined ->
+            % We have a set of valid transports
+            case catch Protocol:transports(Scheme) of
+                {'EXIT', _} ->
+                    throw({invalid_scheme, Scheme});
+                Valid when Transp==undefined ->
+                    % If no transports (and no standard scheme) use the first valid one
                     case Valid of
                         [Transp1|_] -> Transp1;
                         [] -> undefined
                     end;
-                _ ->
+                Valid ->
                     case lists:member(Transp, Valid) of
                         true -> 
                             Transp;
                         false -> 
                             case lists:keyfind(Transp, 1, Valid) of
-                                {Transp, NewTransp} -> NewTransp;
-                                _ -> throw({invalid_transport, Transp})
+                                {Transp, NewTransp} ->
+                                    NewTransp;
+                                _ ->
+                                    throw({invalid_transport, Transp})
                             end
                     end
             end;
@@ -448,14 +478,28 @@ get_transp(_Scheme, Transp, _Opts) ->
     Transp.
 
 
+%%%% @private
+%%get_standard_transp(udp) -> udp;
+%%get_standard_transp(tcp) -> tcp;
+%%get_standard_transp(tls) -> tls;
+%%get_standard_transp(sctp) -> sctp;
+%%get_standard_transp(http) -> http;
+%%get_standard_transp(https) -> https;
+%%get_standard_transp(ws) -> ws;
+%%get_standard_transp(wss) -> wss;
+%%get_standard_transp(_) -> undefined.
+
+
 %% @private
 get_port(0, Transp, #{protocol:=Protocol}) when Protocol/=undefined ->
     case erlang:function_exported(Protocol, default_port, 1) of
         true ->
-            % lager:warning("P: ~p, ~p", [Protocol, Transp]),
             case Protocol:default_port(Transp) of
-                Port when is_integer(Port) -> Port;
-                _ -> throw({invalid_transport, Transp})
+                Port when is_integer(Port) ->
+                    % lager:warning("P: ~p, ~p: ~p", [Protocol, Transp, Port]),
+                    Port;
+                _ ->
+                    throw({invalid_transport, Transp})
             end;
         false ->
             0
@@ -503,7 +547,7 @@ get_cache(Key, _Opts) ->
     ok.
 
 save_cache(Key, Value) ->
-    case nkpacket_config_cache:dns_cache_ttl() of
+    case nkpacket_config:dns_cache_ttl() of
         TTL when is_integer(TTL), TTL > 0 ->
             Now = nklib_util:timestamp(),
             Secs = TTL div 1000,
@@ -601,7 +645,7 @@ sort_sum(List) ->
         [],
         lists:sort(List)),
     Pos = case Total >= 1 of 
-        true -> rand:uniform(Total) - 1;
+        true -> rand:uniform(Total)-1;    %%   0 <= x < Total
         false -> 0
     end,
     {Pos, lists:reverse(Sum)}.
@@ -624,22 +668,39 @@ sort_select(Pos, [C|Rest], Acc) ->
 %% ===================================================================
 
 
-% -define(TEST, true).
+%-define(TEST, true).
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
 
-basic_test() ->
-    {ok, [
-        {undefined, {1,2,3,4}, 0},
-        {tcp, {4,3,2,1}, 25},
-        {undefined, {0,0,0,0}, 1200},
-        {tls, {1,0,0,0,0,0,0,5}, 0}
-    ]} = 
-        resolve("http://1.2.3.4, http://4.3.2.1:25;transport=tcp,"
-                "http://all:1200, <http://[1::5]>;transport=tls"),
+basic_test_() ->
+    {setup,
+        fun() ->
+            ?debugFmt("Starting ~p", [?MODULE]),
+            nkpacket_app:start()
+        end,
+        fun(_) ->
+            ok
+        end,
+        [
+            {timeout, 60, fun basic/0},
+            {timeout, 60, fun weight/0}
+        ]
+    }.
 
-    Http = #{protocol=>nkpacket_protocol_http},
+
+basic() ->
+    Opts = #{no_dns_cache=>true},
+    {ok, [
+        {http, {1,2,3,4}, 0},
+        {tcp, {4,3,2,1}, 25},
+        {http, {0,0,0,0}, 1200},
+        {tls, {1,0,0,0,0,0,0,5}, 0}
+    ]} =
+        resolve("http://1.2.3.4, http://4.3.2.1:25;transport=tcp,"
+                "http://all:1200, <http://[1::5]>;transport=tls", Opts),
+
+    Opts2 = Opts#{protocol=>nkpacket_protocol},
     {ok, [
         {http, {1,2,3,4}, 80},
         {https, {1,2,3,4}, 443},
@@ -653,38 +714,37 @@ basic_test() ->
                 "https://1.2.3.4",
                 "http://all:1200", 
                 "<https://[1::5]>;transport=https"
-            ], Http),
+            ], Opts2),
 
-    {error, {invalid_transport, tcp}} = 
-        resolve("http://4.3.2.1:25;transport=tcp", Http),
+%%    {error, {invalid_transport, tcp}} =
+%%        resolve("http://4.3.2.1:25;transport=tcp", Opts2),
 
    
     {ok, [
-        {undefined, {127,0,0,1}, 0},
-        {undefined, {127,0,0,1}, 0},
-        {undefined, {127,0,0,1}, 25},
+        {http, {127,0,0,1}, 0},
+        {https, {127,0,0,1}, 0},
+        {http, {127,0,0,1}, 25},
         {tls, {127,0,0,1}, 0},
         {udp, {127,0,0,1}, 1234}
     ]} = 
         resolve("http://localhost, https://localhost, http://localhost:25, "
-                "http://localhost;transport=tls, https://localhost:1234;transport=udp"),
+                "http://localhost;transport=tls, https://localhost:1234;transport=udp",
+                Opts2#{resolve_type=>listen}),  % Allow tls with 0 (not in protocol)
 
     {ok, [
         {http, {127,0,0,1}, 80},
         {https, {127,0,0,1}, 443},
         {http, {127,0,0,1}, 25}
     ]} =
-        resolve("http://localhost, https://localhost, http://localhost:25", Http),
+        resolve("http://localhost, https://localhost, http://localhost:25", Opts2),
 
     {error, {invalid_transport, tls}} = 
-        resolve("http://localhost;transport=tls", Http),
+        resolve("http://localhost;transport=tls", Opts2),
 
-    {error, {invalid_transport, udp}} = 
-        resolve("https://localhost:1234;transport=udp", Http),
     ok.
 
 
-weigth_test() ->
+weight() ->
     ?debugMsg("DNS Weight Test"),
     []= groups([]),
     [[{1,a}]] = groups([{1,1,a}]),

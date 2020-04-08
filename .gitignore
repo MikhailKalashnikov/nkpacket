@@ -1,5 +1,4 @@
 .eunit
-deps
 *.beam
 *.plt
 erl_crash.dump
@@ -8,4 +7,5 @@ rel
 log
 .rebar
 _build
-rebar.lock
+/nkpacket.version
+/.rebar3

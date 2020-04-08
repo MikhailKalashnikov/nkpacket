@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -28,53 +28,30 @@
 
 -module(nkpacket_cowboy).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
+-behaviour(cowboy_middleware).
 
 -export([start/2, get_all/0, get_filters/2]).
--export([reply/2, reply/3, reply/4]).
+-export([reply/2, reply/3, reply/4, stream_reply/3, stream_body/3]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2,
          handle_info/2]).
--export([start_link/4, execute/2]).
+-export([execute/2]).
 -export([extract_filter/1]).
--export_type([user_filter/0, user_meta/0]).
 
 -include_lib("nklib/include/nklib.hrl").
 -include("nkpacket.hrl").
 
 
--type user_filter() :: 
-    #{
-        id => term(),           % Mandatory
-        module => module(),     % Mandatory
-        host => binary(),
-        path => binary() | [binary()],
-        ws_proto => binary(),
-        get_headers => boolean() | [binary()]
-    }.
+-define(DEBUG(Txt, Args),
+    case get(nkpacket_debug) of
+        true -> ?LLOG(debug, Txt, Args);
+        _ -> ok
+    end).
+
+-define(LLOG(Type, Txt, Args), lager:Type("NkPACKET Cowboy "++Txt, Args)).
+
 
 -define(WS_PROTO_HD, <<"sec-websocket-protocol">>).
 
--type filter_meta() ::
-    #{
-        get_headers => boolean() | [binary()]
-    }.
-
-
--type user_meta() ::
-    #{
-        headers => [{binary(), binary()}]
-    }.
-
-
--record(filter, {
-    id :: term(),         
-    module :: module(),    
-    transp :: http | https | ws | wss,
-    host :: binary() | all,
-    paths :: [binary()],
-    ws_proto :: binary() | all,
-    meta :: filter_meta(),
-    mon :: reference()
-}).
 
 
 
@@ -91,10 +68,10 @@
 %% The following options are fixed: timeout, compress
 %%
 %% Each server can provide its own 'http_proto'
--spec start(nkpacket:nkport(), user_filter()) ->
+-spec start(nkpacket:nkport(), #cowboy_filter{}) ->
     {ok, pid()} | {error, term()}.
 
-start(#nkport{pid=Pid}=NkPort, Filter) when is_pid(Pid) ->
+start(#nkport{pid=Pid}=NkPort, #cowboy_filter{}=Filter) when is_pid(Pid) ->
     Fun = fun() -> do_start(NkPort, Filter) end,
     #nkport{listen_ip=Ip, listen_port=Port} = NkPort,
     try 
@@ -105,7 +82,7 @@ start(#nkport{pid=Pid}=NkPort, Filter) when is_pid(Pid) ->
 
 
 %% @private
--spec do_start(nkpacket:nkport(), user_filter()) ->
+-spec do_start(nkpacket:nkport(), #cowboy_filter{}) ->
     {ok, pid()} | {error, term()}.
 
 do_start(#nkport{pid=Pid}=NkPort, Filter) when is_pid(Pid) ->
@@ -125,7 +102,7 @@ do_start(#nkport{pid=Pid}=NkPort, Filter) when is_pid(Pid) ->
 
 %% @private
 -spec get_all() ->
-    [{{inet:ip_address(), inet:port_number()}, pid(), [#filter{}]}].
+    [{{inet:ip_address(), inet:port_number()}, pid(), [#cowboy_filter{}]}].
 
 get_all() ->
     [
@@ -136,7 +113,7 @@ get_all() ->
 
 %% @private
 -spec get_filters(inet:ip_address(), inet:port_number()) ->
-    [#filter{}].
+    [#cowboy_filter{}].
 
 get_filters(Ip, Port) -> 
     % Should be only one
@@ -149,7 +126,7 @@ get_filters(Ip, Port) ->
     cowboy_req:req().
 
 reply(Code, Req) ->
-    reply(Code, [], Req).
+    reply(Code, #{}, <<>>, Req).
 
 
 %% @doc Sends a cowboy reply 
@@ -157,18 +134,38 @@ reply(Code, Req) ->
     cowboy_req:req().
 
 reply(Code, Hds, Req) ->
-    cowboy_req:reply(Code, [{<<"server">>, <<"NkPACKET">>}|Hds], Req).
+    reply(Code, Hds, <<>>, Req).
 
 
 %% @doc Sends a cowboy reply 
 -spec reply(cowboy:http_status(), cowboy:http_headers(),
-            iodata(), cowboy_req:req()) -> 
+            iodata() | {send_file, integer(), integer(), term()}, cowboy_req:req()) ->
     cowboy_req:req().
 
-reply(Code, Hds, Body, Req) ->
-    cowboy_req:reply(Code, [{<<"server">>, <<"NkPACKET">>}|Hds], Body, Req).
+reply(Code, Hds, Body, Req) when is_map(Hds) ->
+    cowboy_req:reply(Code, Hds, Body, Req);
+
+reply(Code, Hds, Body, Req) when is_list(Hds) ->
+    cowboy_req:reply(Code, maps:from_list(Hds), Body, Req).
 
 
+%% @doc Sends a cowboy stream reply
+-spec stream_reply(cowboy:http_status(), cowboy:http_headers(),cowboy_req:req()) ->
+    cowboy_req:req().
+
+stream_reply(Code, Hds, Req) when is_map(Hds) ->
+    cowboy_req:stream_reply(Code, Hds, Req);
+
+stream_reply(Code, Hds, Req) when is_list(Hds) ->
+    cowboy_req:stream_reply(Code, Hds, Req).
+
+
+%% @doc Sends a cowboy stream reply
+-spec stream_body(iodata(), fin|nofin, cowboy_req:req()) ->
+    ok.
+
+stream_body(Body, Fin, Req) when Fin==fin;Fin==nofin ->
+    ok = cowboy_req:stream_body(Body, Fin, Req).
 
 %% ===================================================================
 %% gen_server
@@ -179,7 +176,7 @@ reply(Code, Hds, Body, Req) ->
     nkport :: nkpacket:nkport(),
     ranch_id :: term(),
     ranch_pid :: pid(),
-    filters :: [#filter{}]
+    filters :: [#cowboy_filter{}]
 }).
 
 
@@ -187,67 +184,91 @@ reply(Code, Hds, Body, Req) ->
 -spec init(term()) ->
     {ok, #state{}} | {stop, term()}.
 
-init([NkPort, Filter]) ->
+init([NkPort, #cowboy_filter{}=Filter]) ->
     #nkport{
-        transp = Transp, 
-        listen_ip = ListenIp, 
-        listen_port = ListenPort,
-        pid = ListenPid,
-        meta = Meta
+        transp     = Transp,
+        listen_ip  = ListenIp,
+        listen_port= ListenPort,
+        pid        = ListenPid,
+        opts       = Meta
     } = NkPort,
     process_flag(trap_exit, true),   %% Allow calls to terminate
+    Debug = maps:get(debug, Meta, false),
+    put(nkpacket_debug, Debug),
     ListenOpts = listen_opts(NkPort),
     case nkpacket_transport:open_port(NkPort, ListenOpts) of
         {ok, Socket}  ->
-            {InetMod, _, RanchMod} = get_modules(Transp),
+            {InetMod, _, RanchMod, CowboyMod} = get_modules(Transp),
             {ok, {LocalIp, LocalPort}} = InetMod:sockname(Socket),
             Shared = NkPort#nkport{
-                local_ip = LocalIp,
-                local_port = LocalPort, 
-                listen_port = LocalPort,
-                pid = self(),
-                protocol = undefined,
-                socket = Socket,
-                meta = #{}
+                local_ip   = LocalIp,
+                local_port = LocalPort,
+                listen_port= LocalPort,
+                pid        = self(),
+                protocol   = undefined,
+                socket     = Socket,
+                opts       = #{}
             },
             RanchId = {ListenIp, LocalPort},
             Timeout = case Meta of
                 #{idle_timeout:=Timeout0} -> 
                     Timeout0;
                 _ when Transp==ws; Transp==wss -> 
-                    nkpacket_config_cache:ws_timeout();
+                    nkpacket_config:ws_timeout();
                 _ when Transp==http; Transp==https -> 
-                    nkpacket_config_cache:http_timeout()
+                    nkpacket_config:http_timeout()
             end,
-            CowboyOpts1 = maps:get(cowboy_opts, Meta, []),
-            CowboyOpts2 = nklib_util:store_values(
-                [
-                    {env, [{?MODULE, RanchId}]},
-                    {middlewares, [?MODULE]},
-                    {timeout, Timeout},     % Time to close the connection if no requests
-                    {compress, true}        
-                ],
-                CowboyOpts1),
+            CowboyOpts1 = get_cowboy_opts(Meta),
+            CowboyOpts2 = CowboyOpts1#{
+                env => #{nkid => RanchId, nkdebug=>Debug},
+                middlewares => [?MODULE],
+                idle_timeout => Timeout
+                %% stream_handlers => [cowboy_compress_h, cowboy_stream_h]
+                % Warning no compress!
+            },
+            Max = maps:get(tcp_max_connections, Meta, 1024),
+            ?DEBUG("starting Ranch ~p (max:~p) (opts:~p)", [RanchId, Max, CowboyOpts2]),
             {ok, RanchPid} = ranch_listener_sup:start_link(
                 RanchId,
-                maps:get(tcp_listeners, Meta, 100),
                 RanchMod,
-                [
-                    {socket, Socket}, 
-                    {max_connections,  maps:get(tcp_max_connections, Meta, 1024)}
-                ],
-                ?MODULE,
+                #{
+                    socket => Socket,
+                    max_connections => Max
+                },
+                CowboyMod,
                 CowboyOpts2),
+
+            % - Will call to cowboy_clear or cowboy_tls:start/4
+            % - They will call cowboy_http or cowboy_http2:init/5
+            % - They will parse the request and call cowboy_stream:init/3
+            % - By default, cowboy_stream_h is used, that gets env and middlewares and
+            %   call cowboy_stream_h:request_process/3, that call our execute
+            % - In a normal cowboy operation middlewares would be
+            %   - cowboy_router:
+            %       - requires dispatch value in Env
+            %       - it would add routing information and handlers to
+            %         Req and Env, see cowboy_router:execute/2
+            %   - cowboy_handler:
+            %       - requires handler and handler_opts values in Env
+            %       - execute the handlers, adding to the Env
+            %         #{result => ok or the Handle:terminate/3 return value)
+            %         In doc it is said that if result is not ok, it will stop
+            %         processing, I don't see that in code
+            %  - For us, we implement out own middleware
+            %       - For WS, callback module would be nkpacket_transport_ws, and we will
+            %         call cowboy_init/4 there
+
             nklib_proc:put(?MODULE, {ListenIp, LocalPort}),
+            Filter2 = Filter#cowboy_filter{mon=monitor(process, ListenPid)},
             State = #state{
                 nkport = Shared,
                 ranch_id = RanchId,
                 ranch_pid = RanchPid,
-                filters = [make_filter(Filter, ListenPid, Transp)]
+                filters = [Filter2]
             },
             {ok, register(State)};
         {error, Error} ->
-            lager:error("could not start ~p transport on ~p:~p (~p)", 
+            ?LLOG(error, "could not start ~p transport on ~p:~p (~p)", 
                    [Transp, ListenIp, ListenPort, Error]),
             {stop, Error}
     end.
@@ -255,15 +276,15 @@ init([NkPort, Filter]) ->
 
 %% @private
 -spec handle_call(term(), {pid(), term()}, #state{}) ->
-    {reply, term(), #state{}} | {noreply, term(), #state{}}.
+    {reply, term(), #state{}} | {noreply, #state{}}.
 
 handle_call({start, ListenPid, Transp, Filter}, _From, State) ->
     #state{filters=Filters, nkport=#nkport{transp=BaseTransp}} = State,
     case secure(Transp)==secure(BaseTransp) of
         true ->
-            Filter1 = make_filter(Filter, ListenPid, Transp),
-            Filters1 = sort_filters([Filter1|Filters]),
-            {reply, ok, register(State#state{filters=Filters1})};
+            Filter2 = Filter#cowboy_filter{mon = monitor(process, ListenPid)},
+            Filters2 = sort_filters([Filter2|Filters]),
+            {reply, ok, register(State#state{filters=Filters2})};
         false ->
             {reply, {error, cannot_share_port}, State}
     end;
@@ -294,12 +315,12 @@ handle_cast(Msg, State) ->
 
 handle_info({'DOWN', MRef, process, _Pid, _Reason}=Msg, State) ->
     #state{filters=Filters} = State,
-    case lists:keytake(MRef, #filter.mon, Filters) of
+    case lists:keytake(MRef, #cowboy_filter.mon, Filters) of
         {value, _, []} ->
-            % lager:debug("Last server leave"),
+            ?DEBUG("last server leave", []),
             {stop, normal, State};
         {value, _, Filters1} ->
-            % lager:debug("Server leave"),
+            ?DEBUG("server leave", []),
             {noreply, register(State#state{filters=Filters1})};
         false ->
             lager:warning("Module ~p received unexpected info: ~p", [?MODULE, Msg]),
@@ -327,7 +348,7 @@ code_change(_OldVsn, State, _Extra) ->
     ok.
 
 terminate(Reason, #state{ranch_pid=RanchPid}=State) ->  
-    lager:debug("Cowboy listener stop: ~p", [Reason]),
+    ?DEBUG("listener stop: ~p", [Reason]),
     #state{
         ranch_id = RanchId,
         nkport = #nkport{transp=Transp, socket=Socket}
@@ -335,7 +356,7 @@ terminate(Reason, #state{ranch_pid=RanchPid}=State) ->
     exit(RanchPid, shutdown),
     timer:sleep(100),   %% Give time to ranch to close acceptors
     catch ranch_server:cleanup_listener_opts(RanchId),
-    {_, TranspMod, _} = get_modules(Transp),
+    {_, TranspMod, _, _} = get_modules(Transp),
     TranspMod:close(Socket),
     ok.
 
@@ -344,61 +365,36 @@ terminate(Reason, #state{ranch_pid=RanchPid}=State) ->
 %% Ranch Callbacks
 %% ===================================================================
 
-
-%% @private Ranch's callback, called for every new inbound connection
-%% to create a new process to manage it
--spec start_link(term(), term(), atom(), term()) ->
-    {ok, pid()}.
-
-start_link(Ref, Socket, TranspModule, Opts) ->
-    % Now Cowboy will call execute/2
-    % {ok, spawn_link(fun() -> start_cowboy(Ref, Socket, TranspModule, Opts) end)}.
-   cowboy_protocol:start_link(Ref, Socket, TranspModule, Opts).
-
-
-% Cowboy fails when raw bytes are sent to the connection
-%
-% start_cowboy(Ref, Socket, TranspModule, Opts) ->
-%     process_flag(trap_exit, true),
-%     {ok, Pid} = cowboy_protocol:start_link(Ref, Socket, TranspModule, Opts),
-%     start_cowboy_wait(Pid).
-
-% start_cowboy_wait(Pid) ->
-%     receive
-%         {'EXIT', Pid, Reason} ->
-%             lager:warning("COWBOY EXIT: ~p", [Reason]);
-%         Other ->
-%             lager:warning("OTHER: ~p", [Other]),
-%             Pid ! Other,
-%             start_cowboy_wait(Pid)
-%     after 
-%         30000 ->
-%             lager:warning("COWBOY EXIT!!")
-%     end.
-
-
 %% @private Cowboy middleware callback
 -spec execute(Req, Env)-> 
-    {ok, Req, Env} | {stop, Req}
+    {ok, Req, Env} | {stop, Req} | {suspend, module(), atom(), list()}
     when Req::cowboy_req:req(), Env::cowboy_middleware:env().
 
 execute(Req, Env) ->
-    {Ip, Port} = nklib_util:get_value(?MODULE, Env),
+    Req2 = cowboy_req:set_resp_header(<<"server">>, <<"NkPACKET">>, Req),
+    #{
+        nkid := {Ip, Port},
+        nkdebug := Debug
+    } = Env,
+    case Debug of
+        true -> put(nkpacket_debug, true);
+        _ -> ok
+    end,
     Filters = get_filters(Ip, Port),
-    execute(Filters, Req, Env).
+    execute(Filters, Req2, Env).
 
 
-%% @private 
--spec execute([#filter{}], cowboy_req:req(), cowboy_middleware:env()) ->
+%% @private
+-spec execute([#cowboy_filter{}], cowboy_req:req(), cowboy_middleware:env()) ->
     term().
 
 execute([], Req, _Env) ->
-    lager:info("NkPACKET Cowboy: url ~s not matched", [cowboy_req:path(Req)]),
+    ?LLOG(info, "url ~s not matched", [cowboy_req:path(Req)]),
     {stop, reply(404, Req)};
 
 execute([Filter|Rest], Req, Env) ->
-    #filter{
-        id = Id,
+    #cowboy_filter{
+        pid = Pid,
         module = Module,
         transp = Transp,
         host = Host,
@@ -420,7 +416,7 @@ execute([Filter|Rest], Req, Env) ->
     ReqPaths = nkpacket_util:norm_path(cowboy_req:path(Req)),
     ReqWsProto = case cowboy_req:parse_header(?WS_PROTO_HD, Req, []) of
         [ReqWsProto0] -> ReqWsProto0;
-        _ -> none
+        _ -> any
     end,
     case
         (Type == ReqType) andalso
@@ -428,33 +424,62 @@ execute([Filter|Rest], Req, Env) ->
         (WsProto==any orelse ReqWsProto==WsProto) andalso
         check_paths(ReqPaths, Paths)
     of
-        true ->
-            lager:debug("NkPACKET Web Selected: ~p (~p) ~p (~p), ~p (~p), ~p (~p)", 
+        {true, SubPath} ->
+            ?DEBUG("selected: ~p (~p) ~p (~p), ~p (~p), ~p (~p)",
                 [ReqType, Type, ReqHost, Host, ReqPaths, Paths, ReqWsProto, WsProto]),
-            Req1 = case WsProto of
-                any -> 
+            Req2 = case WsProto of
+                any ->
                     Req;
-                _ -> 
+                _ ->
                     cowboy_req:set_resp_header(?WS_PROTO_HD, WsProto, Req)
             end,
-            Meta = get_user_meta(FilterMeta, Req),
-            case Module:cowboy_init(Id, Req1, Meta, Env) of
-                next -> 
+            case Module:cowboy_init(Pid, Req2, SubPath, FilterMeta, Env) of
+                next ->
                     execute(Rest, Req, Env);
                 Result ->
                     Result
             end;
         false ->
-            lager:debug("NkPACKET Web Skipping: ~p (~p) ~p (~p), ~p (~p), ~p (~p)", 
+            ?DEBUG("skipping: ~p (~p) ~p (~p), ~p (~p), ~p (~p)",
                 [ReqType, Type, ReqHost, Host, ReqPaths, Paths, ReqWsProto, WsProto]),
             execute(Rest, Req, Env)
     end.
 
 
-
 %% ===================================================================
 %% Internal
 %% ===================================================================
+
+%% @private
+%% @see https://ninenines.eu/docs/en/cowboy/2.1/manual/cowboy_http/
+get_cowboy_opts(Map) ->
+    List = [
+        {http_inactivity_timeout, inactivity_timeout},
+        {http_max_empty_lines, max_empty_lines},
+        {http_max_header_name_length, max_header_name_length},
+        {http_max_header_value_length, max_header_value_length},
+        {http_max_headers, max_headers},
+        {http_max_keepalive, max_keepalive},
+        {http_max_method_length, max_method_length},
+        {http_max_request_line_length, max_request_line_length},
+        {http_request_timeout, request_timeout}
+    ],
+    get_cowboy_opts(List, Map, #{}).
+
+
+%% @private
+get_cowboy_opts([], _Map, Acc) ->
+    Acc;
+
+get_cowboy_opts([{ExtKey, IntKey}|Rest], Map, Acc) ->
+    Acc2 = case maps:find(ExtKey, Map) of
+        {ok, Value} ->
+            Acc#{IntKey => Value};
+        error ->
+            Acc
+    end,
+    get_cowboy_opts(Rest, Map, Acc2).
+
 
 
 %% @private Gets socket options for listening connections
@@ -469,14 +494,17 @@ listen_opts(#nkport{transp=Transp, listen_ip=Ip})
         {reuseaddr, true}, {backlog, 1024}
     ];
 
-listen_opts(#nkport{transp=Transp, listen_ip=Ip, meta=Opts}) 
+listen_opts(#nkport{transp=Transp, listen_ip=Ip, opts=Opts})
         when Transp==wss; Transp==https ->
     [
+        % From Cowboy 2.0:
+        %{next_protocols_advertised, [<<"h2">>, <<"http/1.1">>]},
+        %{alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]},
         {ip, Ip}, {active, false}, binary,
         {nodelay, true}, {keepalive, true},
         {reuseaddr, true}, {backlog, 1024}
     ]
-    ++ nkpacket_util:make_tls_opts(Opts).
+    ++ nkpacket_tls:make_inbound_opts(Opts).
 
 
 %% @private
@@ -489,50 +517,53 @@ register(#state{nkport=Shared, filters=Filters}=State) ->
 %% @private
 %% Put long paths before short paths
 sort_filters(Filters) ->
-    lists:reverse(lists:keysort(#filter.paths, Filters)).
+    lists:reverse(lists:keysort(#cowboy_filter.paths, Filters)).
 
 
 %% @private
 check_paths([Part|Rest1], [Part|Rest2]) ->
     check_paths(Rest1, Rest2);
 
-check_paths(_, []) ->
-    true;
+check_paths(Rest, []) ->
+    {true, Rest};
 
 check_paths(_A, _B) ->
     false.
 
 
-%% @private
-make_filter(Filter, ListenPid, Transp) ->
-    Meta = maps:with([get_headers], Filter),
-    #filter{
-        id = maps:get(id, Filter),
-        module = maps:get(module, Filter),
-        transp = Transp,
-        host = maps:get(host, Filter, any),
-        paths = nkpacket_util:norm_path(maps:get(path, Filter, any)),
-        ws_proto = maps:get(ws_proto, Filter, any),
-        meta = Meta,
-        mon = monitor(process, ListenPid)
-    }.
+%%%% @private
+%%-spec make_filter(user_filter(), pid(), atom()) ->
+%%    #filter{}.
+%%
+%%make_filter(Filter, ListenPid, Transp) ->
+%%    Meta = maps:with([get_headers], Filter),
+%%    #filter{
+%%        id = maps:get(id, Filter),
+%%        module = maps:get(module, Filter),
+%%        transp = Transp,
+%%        host = maps:get(host, Filter, any),
+%%        paths = nkpacket_util:norm_path(maps:get(path, Filter, any)),
+%%        ws_proto = maps:get(ws_proto, Filter, any),
+%%        meta = Meta,
+%%        mon = monitor(process, ListenPid)
+%%    }.
 
 
-%% @private
--spec get_user_meta(filter_meta(), cowboy:req()) ->
-    user_meta().
-
-get_user_meta(#{get_headers:=Names}, Req) ->
-    Hds1 = cowboy_req:headers(Req),
-    Hds2 = case Names of
-        true -> Hds1;
-        false -> #{};
-        _ -> [{Name, Key} || {Name, Key} <- Hds1, lists:member(Name, Names)]
-    end,
-    #{headers=>Hds2};
-
-get_user_meta(_, _) ->
-    #{}.
+%%%% @private
+%%-spec get_user_meta(filter_meta(), cowboy:req()) ->
+%%    user_meta().
+%%
+%%get_user_meta(#{get_headers:=Names}, Req) ->
+%%    Hds1 = cowboy_req:headers(Req),
+%%    Hds2 = case Names of
+%%        true -> Hds1;
+%%        false -> #{};
+%%        _ -> [{Name, Key} || {Name, Key} <- Hds1, lists:member(Name, Names)]
+%%    end,
+%%    #{headers=>Hds2};
+%%
+%%get_user_meta(_, _) ->
+%%    #{}.
 
 
 %% @private
@@ -543,12 +574,12 @@ secure(https) -> true.
 
 
 %% @private
-get_modules(ws) -> {inet, gen_tcp, ranch_tcp};
-get_modules(wss) -> {ssl, ssl, ranch_ssl};
-get_modules(http) -> {inet, gen_tcp, ranch_tcp};
-get_modules(https) -> {ssl, ssl, ranch_ssl}.
+get_modules(ws) -> {inet, gen_tcp, ranch_tcp, cowboy_clear};
+get_modules(wss) -> {ssl, ssl, ranch_ssl, cowboy_tls};
+get_modules(http) -> {inet, gen_tcp, ranch_tcp, cowboy_clear};
+get_modules(https) -> {ssl, ssl, ranch_ssl, cowboy_tls}.
 
 
 %% @private used in tests
-extract_filter(#filter{id=Id, host=Host, paths=Paths, ws_proto=Proto}) ->
-    {Id, Host, Paths, Proto}.
+extract_filter(#cowboy_filter{pid=Pid, host=Host, paths=Paths, ws_proto=Proto}) ->
+    {Pid, Host, Paths, Proto}.

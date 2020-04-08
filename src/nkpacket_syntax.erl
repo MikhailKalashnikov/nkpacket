@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -22,8 +22,10 @@
 -module(nkpacket_syntax).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
--export([app_syntax/0, app_defaults/0]).
--export([syntax/0, uri_syntax/0, tls_syntax/0, tls_defaults/0]).
+-export([app_syntax/0]).
+-export([syntax/0, safe_syntax/0, tls_syntax/0, tls_syntax/1, extract_tls/1,
+         packet_syntax/0, resolve_syntax/1]).
+-export([spec_http_proto/3, spec_headers/1]).
 
 -include("nkpacket.hrl").
 
@@ -44,110 +46,164 @@ app_syntax() ->
         connect_timeout => nat_integer,
         sctp_out_streams => nat_integer,
         sctp_in_streams => nat_integer,
-        main_ip => [ip4, {enum, [auto]}],
-        main_ip6 => [ip6, {enum, [auto]}],
-        ext_ip => [ip4, {enum, [auto]}],
-        ext_ip6 => [ip6, {enum, [auto]}],
-        ?TLS_SYNTAX
-    }.
-
-
-
-app_defaults() ->
-    #{
-        max_connections =>  1024,
-        dns_cache_ttl => 30000,                 % msecs
-        udp_timeout => 30000,                   % 
-        tcp_timeout => 180000,                  % 
-        sctp_timeout => 180000,                 % 
-        ws_timeout => 180000,                   % 
-        http_timeout => 180000,                 % 
-        connect_timeout => 30000,               %
-        sctp_out_streams => 10,
-        sctp_in_streams => 10,
-        main_ip => auto,
-        main_ip6 => auto,
-        ext_ip => auto,
-        ext_ip6 => auto
+        main_ip => [ip4, {atom, [auto]}],
+        main_ip6 => [ip6, {atom, [auto]}],
+        ext_ip => [ip4, {atom, [auto]}],
+        ext_ip6 => [ip6, {atom, [auto]}],
+        '__defaults' => #{
+            max_connections =>  1024,
+            dns_cache_ttl => 30000,                 % msecs
+            udp_timeout => 30000,                   %
+            tcp_timeout => 180000,                  %
+            sctp_timeout => 180000,                 %
+            ws_timeout => 180000,                   %
+            http_timeout => 180000,                 %
+            connect_timeout => 30000,               %
+            sctp_out_streams => 10,
+            sctp_in_streams => 10,
+            main_ip => auto,
+            main_ip6 => auto,
+            ext_ip => auto,
+            ext_ip6 => auto
+        }
     }.
 
 
 syntax() ->
-    #{
+    Base = #{
+        id => any,
         class => any,
         monitor => proc,
+        protocol => module,
         idle_timeout => pos_integer,
         connect_timeout => nat_integer,
         sctp_out_streams => nat_integer,
         sctp_in_streams => nat_integer,
         no_dns_cache => boolean,
         refresh_fun => {function, 1},
-        valid_schemes => {list, atom},
         udp_starts_tcp => boolean,
         udp_to_tcp => boolean,
         udp_max_size => nat_integer,            % Only used for sending packets
         udp_no_connections => boolean,
         udp_stun_reply => boolean,
         udp_stun_t1 => nat_integer,
-        tcp_packet => [{enum, [raw]}, {integer, [1, 2, 4]}],
+        tcp_packet => [{atom, [raw]}, {integer, [1, 2, 4]}],
+        send_timeout => integer,
+        send_timeout_close => boolean,
         tcp_max_connections => nat_integer,
         tcp_listeners => nat_integer,
+        user => binary,
+        password => binary,
         host => host,
-        path => path,
+        path => binary,     % Changed from 'path' to allow ending '/'
         get_headers => [boolean, {list, binary}],
-        cowboy_opts => list,
+        external_url => binary,
+        http_inactivity_timeout => pos_integer,    % msecs
+        http_max_empty_lines => pos_integer,
+        http_max_header_name_length => pos_integer,
+        http_max_header_value_length => pos_integer,
+        http_max_headers => pos_integer,
+        http_max_keepalive => pos_integer,
+        http_max_method_length => pos_integer,
+        http_max_request_line_length => pos_integer,
+        http_request_timeout => pos_integer,
         ws_proto => lower,
-        http_proto => fun spec_http_proto/3,
+        headers => fun ?MODULE:spec_headers/1,
+        http_proto => fun ?MODULE:spec_http_proto/3,
         force_new => boolean,
-        pre_send_fun => {function, 2},
-        resolve_type => {enum, [listen, connect]},
+        resolve_type => {atom, [listen, connect, send]},
         base_nkport => [boolean, {record, nkport}],
-        ?TLS_SYNTAX,
-        user => any,
-        parse_syntax => ignore,
+        user_state => any,
+        debug => boolean,
         transport => atom
-    }.
+    },
+    add_tls_syntax(Base).
 
 
-uri_syntax() ->
-    #{
-        idle_timeout => pos_integer,
-        connect_timeout => nat_integer,
-        sctp_out_streams => nat_integer,
-        sctp_in_streams => nat_integer,
-        no_dns_cache => boolean,
-        tcp_listeners => nat_integer,
-        host => host,
-        path => path,
-        ws_proto => lower,
+safe_syntax() ->
+    Opts = [
+        id,
+        idle_timeout,
+        connect_timeout,
+        no_dns_cache,
+        udp_max_size,
+        tcp_packet,
+        send_timeout,
+        send_timeout_close,
+        tcp_listeners,
+        host,
+        path,
+        user,
+        password,
+        get_headers,
+        external_url,
+        ws_proto,
+        headers,                % Not sure
+        debug,
+        http_inactivity_timeout,
+        http_max_empty_lines,
+        http_max_header_name_length,
+        http_max_header_value_length,
+        http_max_headers,
+        http_max_keepalive,
+        http_max_method_length,
+        http_max_request_line_length,
+        http_request_timeout
+    ] ++ maps:keys(tls_syntax()),
+    Syntax = syntax(),
+    maps:with(Opts, Syntax).
+
+
+tls_syntax() ->
+    tls_syntax(#{}).
+
+
+%% Config for letsencrypt:
+%% tls_keyfile => "/etc/letsencrypt/archive/.../privkey.pem",
+%% tls_cacertfile => "/etc/letsencrypt/archive/.../chain.pem",
+%% tls_certfile => "/etc/letsencrypt/archive/.../cert.pem"
+
+tls_syntax(Base) ->
+    Base#{
+        tls_verify => {atom, [host, true, false]},
         tls_certfile => string,
         tls_keyfile => string,
         tls_cacertfile => string,
         tls_password => string,
-        tls_verify => boolean,
-        tls_depth => {integer, 0, 16}
+        tls_depth => {integer, 0, 16},
+        tls_versions => {list, atom}
     }.
 
 
-tls_syntax() ->
+add_tls_syntax(Syntax) ->
+    tls_syntax(Syntax).
+
+
+extract_tls(Map) when is_map(Map) ->
+    Keys = lists:filter(
+        fun(Key) ->
+            case nklib_util:to_list(Key) of
+                "tls_" ++ _ -> true;
+                _ -> false
+            end
+        end,
+        maps:keys(Map)),
+    maps:with(Keys, Map).
+
+
+packet_syntax() ->
     #{
-        ?TLS_SYNTAX
+        packet_idle_timeout => pos_integer,
+        packet_connect_timeout => nat_integer,
+        packet_sctp_out_streams => nat_integer,
+        packet_sctp_in_streams => nat_integer,
+        packet_no_dns_cache => boolean
     }.
 
 
-tls_defaults() ->
-    Base = case code:priv_dir(nkpacket) of
-        PrivDir when is_list(PrivDir) ->
-            #{
-                certfile => filename:join(PrivDir, "cert.pem"),
-                keyfile => filename:join(PrivDir, "key.pem")
-            };
-        _ ->
-            #{}
-    end,
-    %% Avoid SSLv3
-    Base#{versions => ['tlsv1.2', 'tlsv1.1', 'tlsv1']}.
-    
+resolve_syntax(Protocol) ->
+    {mfa, nkpacket_resolve, check_syntax, [Protocol]}.
+
 
 
 %% @private
@@ -157,3 +213,22 @@ spec_http_proto(_, {custom, #{env:=_, middlewares:=_}}, _) -> ok;
 spec_http_proto(_, _, _) -> error.
 
 
+%% @private
+spec_headers(List) when is_list(List) ->
+    spec_headers(List, []);
+spec_headers(_) ->
+    error.
+
+
+%% @private
+spec_headers([], Acc) ->
+    {ok, Acc};
+spec_headers([{K, V}|Rest], Acc) ->
+    spec_headers(Rest, [{to_bin(K), to_bin(V)}|Acc]);
+spec_headers(_, _Acc) ->
+    error.
+
+
+
+%% @private
+to_bin(K) -> nklib_util:to_binary(K).

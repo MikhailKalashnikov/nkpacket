@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -18,12 +18,11 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @private Generic tranport connection process library functions
+%% @private Generic transport connection process library functions
 -module(nkpacket_connection_lib).
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
--export([is_max/0, raw_send/2, raw_send/3, raw_send_sync/2, raw_stop/1]).
--export_type([send_opts/0]).
+-export([is_max/0, raw_send/2, raw_send_sync/2, raw_stop/1]).
 
 -include_lib("nklib/include/nklib.hrl").
 -include_lib("kernel/include/inet_sctp.hrl").
@@ -33,10 +32,6 @@
 -define(SYNC_TIMEOUT, 30000).
 -define(UDP_MAX_SIZE, 1300).
 
--type send_opts() :: 
-    #{
-        udp_max_size => integer()
-    }.
 
 
 %% ===================================================================
@@ -48,7 +43,7 @@
     boolean().
 
 is_max() ->
-    Max = nkpacket_config_cache:max_connections(),
+    Max = nkpacket_config:max_connections(),
     case nklib_counters:value(nkpacket_connections) of
         Current when Current > Max -> 
             true;
@@ -56,50 +51,45 @@ is_max() ->
             false
     end.
 
-%% @doc Equivalent to raw_send(NkPort, Data, #{})
+
+%% @doc Sends data directly to a transport
 -spec raw_send(nkpacket:nkport(), nkpacket:outcoming()) ->
     ok | {error, term()}.
     
-raw_send(NkPort, Data) ->
-    raw_send(NkPort, Data, #{}).
-
-
-%% @doc Sends data directly to a transport
--spec raw_send(nkpacket:nkport(), nkpacket:outcoming(), send_opts()) ->
-    ok | {error, term()}.
-    
-raw_send(#nkport{transp=udp}=NkPort, Data, Opts) ->
+raw_send(#nkport{transp=udp, opts=Opts} = NkPort, Data) ->
     MaxSize = maps:get(udp_max_size, Opts, ?UDP_MAX_SIZE),
     case byte_size(Data) > MaxSize of
         true ->
-            {error, udp_too_large};    
+            {error, udp_too_large};
         false ->
             #nkport{socket=Socket, remote_ip=Ip, remote_port=Port} = NkPort,
             case gen_udp:send(Socket, Ip, Port, Data) of
-                {error, emsgsize} -> {error, udp_too_large};
-                Other -> Other
+                {error, emsgsize} ->
+                    {error, udp_too_large};
+                Other ->
+                    Other
             end
     end;
 
-raw_send(#nkport{transp=tcp, socket=Socket}, Data, _Opts) ->
+raw_send(#nkport{transp=tcp, socket=Socket}, Data) ->
     gen_tcp:send(Socket, Data);
 
-raw_send(#nkport{transp=tls, socket=Socket}, Data, _Opts) ->
+raw_send(#nkport{transp=tls, socket=Socket}, Data) ->
     % lager:warning("Send: ~p", [list_to_binary([Data])]),
     ssl:send(Socket, Data);
 
-raw_send(#nkport{transp=sctp, socket={Socket, AssocId}}, Data, _Opts) ->
+raw_send(#nkport{transp=sctp, socket={Socket, AssocId}}, Data) ->
     gen_sctp:send(Socket, AssocId, 0, Data);
 
-raw_send(#nkport{transp=ws, socket=Socket}, Data, _Opts) when is_port(Socket) ->
+raw_send(#nkport{transp=ws, socket=Socket}, Data) when is_port(Socket) ->
     Bin = nkpacket_connection_ws:encode(get_ws_frame(Data)),
     gen_tcp:send(Socket, Bin);
 
-raw_send(#nkport{transp=wss, socket={sslsocket, _, _}=Socket}, Data, _Opts) ->
+raw_send(#nkport{transp=wss, socket={sslsocket, _, _}=Socket}, Data) ->
     Bin = nkpacket_connection_ws:encode(get_ws_frame(Data)),
     ssl:send(Socket, Bin);
 
-raw_send(#nkport{transp=Transp, socket=Pid}, Data, _Opts) when is_pid(Pid) ->
+raw_send(#nkport{transp=Transp, socket=Pid}, Data) when is_pid(Pid) ->
     Msg = if
         Transp==ws; Transp==wss -> get_ws_frame(Data);
         true -> Data
@@ -112,7 +102,14 @@ raw_send(#nkport{transp=Transp, socket=Pid}, Data, _Opts) when is_pid(Pid) ->
             {error, no_process}
     end;
 
-raw_send(_, _, _) ->
+%% HTTP client pseudo-transport
+raw_send(#nkport{transp=http, socket=Socket}, Data) when is_port(Socket) ->
+    gen_tcp:send(Socket, Data);
+
+raw_send(#nkport{transp=https, socket={sslsocket, _, _}=Socket}, Data) ->
+    ssl:send(Socket, Data);
+
+raw_send(_, _) ->
     {error, invalid_transport}.
 
 
@@ -169,6 +166,12 @@ raw_stop(#nkport{transp=ws, socket=Socket}) when is_port(Socket) ->
     gen_tcp:close(Socket);
 
 raw_stop(#nkport{transp=wss, socket={sslsocket, _, _}=Socket}) ->
+    ssl:close(Socket);
+
+raw_stop(#nkport{transp=http, socket=Socket}) when is_port(Socket) ->
+    gen_tcp:close(Socket);
+
+raw_stop(#nkport{transp=https, socket={sslsocket, _, _}=Socket}) ->
     ssl:close(Socket);
 
 raw_stop(#nkport{socket=Pid}) when is_pid(Pid) ->

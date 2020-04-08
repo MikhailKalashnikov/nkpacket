@@ -1,22 +1,18 @@
 {application, nkpacket, [
     {description, "NkPACKET"},
-    {vsn, "0.6.1"},
+    {vsn, "develop"},
     {modules, []},
     {registered, []},
     {mod, {nkpacket_app, []}},
     {applications, [
-        kernel,
-        stdlib,
         crypto,
-        sasl,
         ssl,
-        lager,
+        nklib,
         ssh,
         ranch,
         cowlib,
         cowboy,
-        gun,
-        nklib
+        gun
     ]},
     {env, [
     ]}

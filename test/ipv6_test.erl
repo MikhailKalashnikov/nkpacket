@@ -22,6 +22,7 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
 -compile([export_all]).
+-compile(nowarn_export_all).
 -include_lib("eunit/include/eunit.hrl").
 -include("nkpacket.hrl").
 
@@ -49,8 +50,8 @@ basic() ->
 	All6 = {0,0,0,0,0,0,0,0},
 	Local6 = {0,0,0,0,0,0,0,1},
 	Url = "<test:[::1]:"++integer_to_list(LPort1)++";transport=tcp>",
-	{ok, Tcp1} = nkpacket:start_listener(Url, M1#{class=>dom1}),
-	{ok, Tcp2} = nkpacket:start_listener({test_protocol, tcp, All6, 0}, M2#{class=>dom2}),
+	{ok, _, Tcp1} = nkpacket:start_listener(Url, M1#{class=>dom1}),
+	{ok, _, Tcp2} = nkpacket:start_listener(#nkconn{protocol=test_protocol, transp=tcp, ip=All6, port=0, opts=M2#{class=>dom2}}),
 	{ok, {_, tcp, _, LPort1}} = nkpacket:get_local(Tcp1),	
 	{ok, {_, tcp, _, LPort2}} = nkpacket:get_local(Tcp2),
 	case LPort2 of
@@ -62,7 +63,7 @@ basic() ->
 	receive {Ref1, listen_init} -> ok after 1000 -> error(?LINE) end,
 	receive {Ref2, listen_init} -> ok after 1000 -> error(?LINE) end,
 
-	[Listen1] = nkpacket:get_all(dom1),
+	[Listen1] = nkpacket:get_class_ids(dom1),
  	{ok, #nkport{
         class = dom1,
  		transp = tcp,
@@ -71,7 +72,7 @@ basic() ->
         protocol = test_protocol
 	}} = nkpacket:get_nkport(Listen1),
 
-	[Listen2] = nkpacket:get_all(dom2),
+	[Listen2] = nkpacket:get_class_ids(dom2),
 	{ok, #nkport{
        	class = dom2,
 		transp = tcp,
@@ -81,13 +82,13 @@ basic() ->
         protocol = test_protocol
 	}} = nkpacket:get_nkport(Listen2),
 
-	{ok, _} = nkpacket:send(Url, msg1, M2#{class=>dom2}),
+	{ok, _} = nkpacket:send(Url, msg1, M2#{class=>dom2, base_nkport=>true}),
 	receive {Ref1, conn_init} -> ok after 1000 -> error(?LINE) end,
 	receive {Ref1, {parse, msg1}} -> ok after 1000 -> error(?LINE) end,
 	receive {Ref2, conn_init} -> ok after 1000 -> error(?LINE) end,
 	receive {Ref2, {encode, msg1}} -> ok after 1000 -> error(?LINE) end,
 
-	[Conn1] = nkpacket_connection:get_all(dom1),
+	[{_, Conn1}] = nkpacket_connection:get_all_class(dom1),
 	{ok, #nkport{
 	        class = dom1,
 			transp=tcp,
@@ -96,7 +97,7 @@ basic() ->
 			listen_ip=Local6, listen_port=LPort1
 	}} = nkpacket:get_nkport(Conn1),
 
-	[Conn2] = nkpacket_connection:get_all(dom2),
+	[{_, Conn2}] = nkpacket_connection:get_all_class(dom2),
 	{ok, #nkport{
 	        class = dom2,
 			transp=tcp,
@@ -105,8 +106,8 @@ basic() ->
 			listen_ip=All6, listen_port=LPort2
 	}} = nkpacket:get_nkport(Conn2),
 
-	ok = nkpacket:stop_listener(Tcp1),
-	ok = nkpacket:stop_listener(Tcp2),
+	ok = nkpacket:stop_listeners(Tcp1),
+	ok = nkpacket:stop_listeners(Tcp2),
 
 	receive {Ref2, conn_stop} -> ok after 2000 -> error(?LINE) end,
 	receive {Ref1, conn_stop} -> ok after 2000 -> error(?LINE) end,
@@ -121,11 +122,11 @@ is_local() ->
 	LPort2 = test_util:get_port(tcp),
 	_ = test_util:reset_2(),
 
-	{ok, Tcp0} = nkpacket:start_listener(
+	{ok, _, Tcp0} = nkpacket:start_listener(
 		"<test:[::1]:"++integer_to_list(LPort0)++";transport=tcp>", #{}),
-	{ok, Tcp1} = nkpacket:start_listener( 
+	{ok, _, Tcp1} = nkpacket:start_listener(
 		"<test:[::1]:"++integer_to_list(LPort1)++";transport=tcp>", #{class=>dom1}),
-	{ok, Tcp2} = nkpacket:start_listener(
+	{ok, _, Tcp2} = nkpacket:start_listener(
 		"<test://all6:"++integer_to_list(LPort2)++";transport=udp>", #{class=>dom2}),
 
 	[Uri0] = nklib_parse:uris(
@@ -153,7 +154,7 @@ is_local() ->
 	false = nkpacket:is_local(Uri3, #{class=>dom2}),
 
 	case 
-		[Ip || Ip <- nkpacket_config_cache:local_ips(), size(Ip)==8]
+		[Ip || Ip <- nkpacket_config:local_ips(), size(Ip)==8]
 		-- [{0,0,0,0,0,0,0,1}]
 	of
 		[] -> 
@@ -167,9 +168,9 @@ is_local() ->
 			true = nkpacket:is_local(Uri4, #{class=>dom2})
 	end,
 
-	ok = nkpacket:stop_listener(Tcp0),
-	ok = nkpacket:stop_listener(Tcp1),
-	ok = nkpacket:stop_listener(Tcp2).
+	ok = nkpacket:stop_listeners(Tcp0),
+	ok = nkpacket:stop_listeners(Tcp1),
+	ok = nkpacket:stop_listeners(Tcp2).
 
 
 

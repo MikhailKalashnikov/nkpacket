@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2015 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -26,7 +26,7 @@
 %% ===================================================================
 
 -define(CONN_LISTEN_OPTS, 
-    [group, user, idle_timeout, host, path, ws_proto, refresh_fun]).
+    [group, user, idle_timeout, host, path, ws_proto, refresh_fun, debug, external_url]).
 
 -define(CONN_CLIENT_OPTS, [monitor|?CONN_LISTEN_OPTS]).
 
@@ -51,25 +51,14 @@
     ?DO_LOG(error, Domain, Text, List)).
 
 
--define(TLS_SYNTAX,
-    tls_certfile => string,
-    tls_keyfile => string,
-    tls_cacertfile => string,
-    tls_password => string,
-    tls_verify => boolean,
-    tls_depth => {integer, 0, 16},
-    tls_versions => {list, atom}
-).
 
--define(TLS_TYPES,
-    tls_certfile => string(),
-    tls_keyfile => string(),
-    tls_cacertfile => string(),
-    tls_password => string(),
-    tls_verify => boolean(),
-    tls_depth => 0..16,
-    tls_versions => [atom()]
-).
+%%-define(PACKET_TYPES,
+%%    packet_idle_timeout => integer()
+%%    packet_connect_timeout => integer(),
+%%    packet_sctp_out_streams => integer(),
+%%    packet_sctp_in_streams => integer,
+%%    packet_no_dns_cache => integer(),
+%%).
 
 
 %% ===================================================================
@@ -79,18 +68,41 @@
 %% Meta can contain most values from listener_opts and connect_opts
 
 -record(nkport, {
-    class :: nkpacket:class(),
+    id :: nkpacket:id() | undefined,
+    class :: nkpacket:class() | undefined,
+    protocol :: nkpacket:protocol() | undefined,
+    transp :: nkpacket:transport() | undefined,
+    local_ip :: inet:ip_address() | undefined,
+    local_port :: inet:port_number() | undefined,
+    remote_ip :: inet:ip_address() | undefined,
+    remote_port :: inet:port_number() | undefined,
+    listen_ip :: inet:ip_address() | undefined,
+    listen_port :: inet:port_number() | undefined,
+    pid :: pid() | undefined,
+    socket :: nkpacket_transport:socket() | undefined,
+    opts = #{} :: nkpacket:listen_opts() | nkpacket:send_opts(),
+    user_state = undefined :: nkpacket:user_state()
+}).
+
+
+-record(nkconn, {
     protocol :: nkpacket:protocol(),
     transp :: nkpacket:transport(),
-    local_ip :: inet:ip_address(),
-    local_port :: inet:port_number(),
-    remote_ip :: inet:ip_address(),
-    remote_port :: inet:port_number(),
-    listen_ip :: inet:ip_address(),
-    listen_port :: inet:port_number(),
+    ip = {0,0,0,0} :: inet:ip_address(),
+    port = 0 :: inet:port_number(),
+    opts = #{} :: nkpacket:listen_opts() | nkpacket:send_opts()
+}).
+
+
+-record(cowboy_filter, {
     pid :: pid(),
-    socket :: nkpacket_transport:socket(),
-    meta = #{} :: map()
+    module :: module(),
+    transp :: http | https | ws | wss,
+    host = any :: any | binary(),
+    paths = [] :: [binary()],
+    ws_proto = any :: binary() | any,
+    meta :: #{get_headers => [binary()], compress => boolean(), idle_timeout=>pos_integer()},
+    mon :: reference() | undefined
 }).
 
 

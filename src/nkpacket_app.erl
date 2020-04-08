@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2016 Carlos Gonzalez Florido.  All Rights Reserved.
+%% Copyright (c) 2019 Carlos Gonzalez Florido.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -50,15 +50,12 @@ start() ->
 
 %% @private OTP standard start callback
 start(_Type, _Args) ->
-    put(tls_defaults, nkpacket_syntax:tls_defaults()),
+    put(default_certs, nkpacket_tls:defaults_certs()),
     Syntax = nkpacket_syntax:app_syntax(),
-    Defaults = nkpacket_syntax:app_defaults(),
-    case nklib_config:load_env(nkpacket, Syntax, Defaults) of
+    case nklib_config:load_env(nkpacket, Syntax) of
         {ok, _} ->
             get_auto_ips(),
-            nkpacket:register_protocol(http, nkpacket_protocol_http),
-            nkpacket:register_protocol(https, nkpacket_protocol_http),
-            nkpacket_util:make_cache(),
+            nkpacket_config:set_config(),
             {ok, Pid} = nkpacket_sup:start_link(),
             {ok, Vsn} = application:get_key(nkpacket, vsn),
             lager:info("NkPACKET v~s has started.", [Vsn]),
@@ -67,6 +64,7 @@ start(_Type, _Args) ->
             ExtIp = nklib_util:to_host(nkpacket_app:get(ext_ip)),
             lager:info("Main IP is ~s (~s). External IP is ~s", 
                        [MainIp, MainIp6, ExtIp]),
+            code:ensure_loaded(nkpacket_httpc_protocol),
             {ok, Pid};
         {error, Error} ->
             lager:error("Config error: ~p", [Error]),
@@ -82,16 +80,16 @@ stop(_) ->
 
 %% Config Management
 get(Key) ->
-    nklib_config:get(nkpacket, Key).
+    nklib_config:get(?APP, Key).
 
 get(Key, Default) ->
-    nklib_config:get(nkpacket, Key, Default).
+    nklib_config:get(?APP, Key, Default).
 
 get_srv(Class, Key) ->
-    nklib_config:get_domain(nkpacket, Class, Key).
+    nklib_config:get_domain(?APP, Class, Key).
 
 put(Key, Val) ->
-    nklib_config:put(nkpacket, Key, Val).
+    nklib_config:put(?APP, Key, Val).
 
 
 %% @private

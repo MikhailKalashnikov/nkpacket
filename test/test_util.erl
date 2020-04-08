@@ -22,6 +22,7 @@
 -author('Carlos Gonzalez <carlosj.gf@gmail.com>').
 
 -compile([export_all]).
+-compile(nowarn_export_all).
 -include_lib("eunit/include/eunit.hrl").
 -include("nkpacket.hrl").
 
@@ -33,7 +34,7 @@ reset_1() ->
  	timer:sleep(100),
 	Pid = self(),
 	Ref = make_ref(),
-	M = #{user=>{Pid, Ref}},
+	M = #{user_state=>{Pid, Ref}},
 	{Ref, M}.
 
 
@@ -44,9 +45,9 @@ reset_2() ->
  	timer:sleep(100),
 	Pid = self(),
 	Ref1 = make_ref(),
-	M1 = #{user=>{Pid, Ref1}},
+	M1 = #{user_state=>{Pid, Ref1}},
 	Ref2 = make_ref(),
-	M2 = #{user=>{Pid, Ref2}},
+	M2 = #{user_state=>{Pid, Ref2}},
 	{Ref1, M1, Ref2, M2}.
 
 
@@ -57,11 +58,11 @@ reset_3() ->
  	timer:sleep(100),
 	Pid = self(),
 	Ref1 = make_ref(),
-	M1 = #{user=>{Pid, Ref1}},
+	M1 = #{user_state=>{Pid, Ref1}},
 	Ref2 = make_ref(),
-	M2 = #{user=>{Pid, Ref2}},
+	M2 = #{user_state=>{Pid, Ref2}},
 	Ref3 = make_ref(),
-	M3 = #{user=>{Pid, Ref3}},
+	M3 = #{user_state=>{Pid, Ref3}},
 	{Ref1, M1, Ref2, M2, Ref3, M3}.
 
 
@@ -72,13 +73,13 @@ reset_4() ->
  	timer:sleep(100),
 	Pid = self(),
 	Ref1 = make_ref(),
-	M1 = #{user=>{Pid, Ref1}},
+	M1 = #{user_state=>{Pid, Ref1}},
 	Ref2 = make_ref(),
-	M2 = #{user=>{Pid, Ref2}},
+	M2 = #{user_state=>{Pid, Ref2}},
 	Ref3 = make_ref(),
-	M3 = #{user=>{Pid, Ref3}},
+	M3 = #{user_state=>{Pid, Ref3}},
 	Ref4 = make_ref(),
-	M4 = #{user=>{Pid, Ref4}},
+	M4 = #{user_state=>{Pid, Ref4}},
 	{Ref1, M1, Ref2, M2, Ref3, M3, Ref4, M4}.
 
 
@@ -106,11 +107,11 @@ get_port(tcp) ->
 
 
 listeners(Dom) ->
-	lists:sort([element(2, nkpacket:get_nkport(P)) || P <- nkpacket:get_all(Dom)]).
+	lists:sort([element(2, nkpacket:get_nkport(P)) || P <- nkpacket:get_class_ids(Dom)]).
 
 
 conns(Dom) ->
-	lists:sort([element(2, nkpacket:get_nkport(P)) || P <- nkpacket_connection:get_all(Dom)]).
+	lists:sort([element(2, nkpacket:get_nkport(element(2,P))) || P <- nkpacket_connection:get_all_class(Dom)]).
 
 
 
